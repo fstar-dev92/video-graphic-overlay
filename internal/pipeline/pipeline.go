@@ -30,6 +30,8 @@ type Pipeline struct {
 	tsdemux       *gst.Element // tsdemux for MPEG-TS streams
 	videoQueue    *gst.Element // queue for video
 	audioQueue    *gst.Element // queue for audio
+	videoParser   *gst.Element // h264parse for video
+	audioParser   *gst.Element // aacparse for audio
 	videoDecode   *gst.Element // decodebin for video
 	audioDecode   *gst.Element // decodebin for audio
 	videoConv     *gst.Element // videoconvert
@@ -134,6 +136,12 @@ func (p *Pipeline) createElements() error {
 	p.videoQueue.SetProperty("max-size-buffers", 100)
 	p.videoQueue.SetProperty("max-size-time", uint64(1000000000)) // 1 second
 
+	// Add H.264 parser for better caps handling
+	p.videoParser, err = gst.NewElement("h264parse")
+	if err != nil {
+		return fmt.Errorf("failed to create h264parse: %w", err)
+	}
+
 	p.videoDecode, err = gst.NewElement("decodebin")
 	if err != nil {
 		return fmt.Errorf("failed to create video decodebin: %w", err)
@@ -156,6 +164,12 @@ func (p *Pipeline) createElements() error {
 	}
 	p.audioQueue.SetProperty("max-size-buffers", 100)
 	p.audioQueue.SetProperty("max-size-time", uint64(1000000000)) // 1 second
+
+	// Add AAC parser for better caps handling
+	p.audioParser, err = gst.NewElement("aacparse")
+	if err != nil {
+		return fmt.Errorf("failed to create aacparse: %w", err)
+	}
 
 	p.audioDecode, err = gst.NewElement("decodebin")
 	if err != nil {
@@ -234,8 +248,8 @@ func (p *Pipeline) createElements() error {
 
 	// Add all elements to pipeline
 	elements := []*gst.Element{
-		p.source, p.demux, p.tsdemux, p.videoQueue, p.videoDecode, p.videoConv, p.videoScale,
-		p.audioQueue, p.audioDecode, p.audioConv, p.audioResamp,
+		p.source, p.demux, p.tsdemux, p.videoQueue, p.videoParser, p.videoDecode, p.videoConv, p.videoScale,
+		p.audioQueue, p.audioParser, p.audioDecode, p.audioConv, p.audioResamp,
 		p.videoEnc, p.audioEnc, p.videoEncQueue, p.audioEncQueue, p.mux, p.sink,
 	}
 
@@ -436,9 +450,12 @@ func (p *Pipeline) linkVideoChain() error {
 		}
 	})
 
-	// Link video queue to decode
-	if err := p.videoQueue.Link(p.videoDecode); err != nil {
-		return fmt.Errorf("failed to link video queue to decode: %w", err)
+	// Link video queue to parser to decode
+	if err := p.videoQueue.Link(p.videoParser); err != nil {
+		return fmt.Errorf("failed to link video queue to parser: %w", err)
+	}
+	if err := p.videoParser.Link(p.videoDecode); err != nil {
+		return fmt.Errorf("failed to link video parser to decode: %w", err)
 	}
 
 	// Link video processing elements
@@ -497,9 +514,12 @@ func (p *Pipeline) linkAudioChain() error {
 		}
 	})
 
-	// Link audio queue to decode
-	if err := p.audioQueue.Link(p.audioDecode); err != nil {
-		return fmt.Errorf("failed to link audio queue to decode: %w", err)
+	// Link audio queue to parser to decode
+	if err := p.audioQueue.Link(p.audioParser); err != nil {
+		return fmt.Errorf("failed to link audio queue to parser: %w", err)
+	}
+	if err := p.audioParser.Link(p.audioDecode); err != nil {
+		return fmt.Errorf("failed to link audio parser to decode: %w", err)
 	}
 
 	// Link audio processing elements
