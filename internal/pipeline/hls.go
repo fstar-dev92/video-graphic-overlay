@@ -5,8 +5,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-gst/go-gst/gst"
 	"video-graphic-overlay-gstreamer/internal/config"
+
+	"github.com/go-gst/go-gst/gst"
 )
 
 // HLSInput handles HLS stream input
@@ -42,13 +43,13 @@ func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 	source.SetProperty("location", h.config.HLSUrl)
 	source.SetProperty("timeout", h.config.Timeout)
 	source.SetProperty("retries", h.config.ConnectionRetry)
-	
+
 	// Set user agent for better compatibility
 	source.SetProperty("user-agent", "GStreamer-HLS-Overlay/1.0")
-	
+
 	// Enable automatic retries
 	source.SetProperty("automatic-redirect", true)
-	
+
 	h.source = source
 	elements = append(elements, source)
 
@@ -59,8 +60,10 @@ func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 	}
 
 	// Configure hlsdemux for low latency
-	demux.SetProperty("max-buffering-time", h.config.BufferSize)
-	
+	// Note: max-buffering-time property doesn't exist in newer GStreamer versions
+	// Use connection-speed instead for better performance
+	demux.SetProperty("connection-speed", uint(h.config.BufferSize/1024)) // Convert to kbps
+
 	h.demux = demux
 	elements = append(elements, demux)
 
@@ -71,11 +74,11 @@ func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 func (h *HLSInput) GetPipelineString() string {
 	return fmt.Sprintf("souphttpsrc location=%s timeout=%d retries=%d "+
 		"user-agent=\"GStreamer-HLS-Overlay/1.0\" automatic-redirect=true ! "+
-		"hlsdemux max-buffering-time=%d name=demux",
+		"hlsdemux connection-speed=%d name=demux",
 		h.config.HLSUrl,
 		h.config.Timeout,
 		h.config.ConnectionRetry,
-		h.config.BufferSize)
+		h.config.BufferSize/1024) // Convert to kbps
 }
 
 // validateHLSURL validates the HLS URL format
@@ -129,10 +132,10 @@ func NewAdaptiveHLSInput(cfg *config.InputConfig, maxBitrate, minBitrate int) (*
 func (a *AdaptiveHLSInput) GetPipelineString() string {
 	return fmt.Sprintf("souphttpsrc location=%s timeout=%d retries=%d "+
 		"user-agent=\"GStreamer-HLS-Overlay/1.0\" automatic-redirect=true ! "+
-		"hlsdemux max-buffering-time=%d max-bitrate=%d name=demux",
+		"hlsdemux connection-speed=%d bitrate-limit=%.1f name=demux",
 		a.config.HLSUrl,
 		a.config.Timeout,
 		a.config.ConnectionRetry,
-		a.config.BufferSize,
-		a.maxBitrate)
+		a.config.BufferSize/1024, // Convert to kbps
+		float64(a.maxBitrate)/float64(a.config.BufferSize)) // Bitrate limit ratio
 }
