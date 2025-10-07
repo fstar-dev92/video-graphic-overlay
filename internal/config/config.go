@@ -9,9 +9,9 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Input   InputConfig   `yaml:"input"`
-	Output  OutputConfig  `yaml:"output"`
-	Overlay OverlayConfig `yaml:"overlay"`
+	Input    InputConfig    `yaml:"input"`
+	Output   OutputConfig   `yaml:"output"`
+	Overlay  OverlayConfig  `yaml:"overlay"`
 	Pipeline PipelineConfig `yaml:"pipeline"`
 }
 
@@ -25,22 +25,22 @@ type InputConfig struct {
 
 // OutputConfig represents UDP output configuration
 type OutputConfig struct {
-	Host        string `yaml:"host"`
-	Port        int    `yaml:"port"`
-	Bitrate     int    `yaml:"bitrate"`
-	VideoCodec  string `yaml:"video_codec"`
-	AudioCodec  string `yaml:"audio_codec"`
-	Format      string `yaml:"format"`
+	Host       string `yaml:"host"`
+	Port       int    `yaml:"port"`
+	Bitrate    int    `yaml:"bitrate"`
+	VideoCodec string `yaml:"video_codec"`
+	AudioCodec string `yaml:"audio_codec"`
+	Format     string `yaml:"format"`
 }
 
 // OverlayConfig represents graphic overlay configuration
 type OverlayConfig struct {
-	Enabled     bool              `yaml:"enabled"`
-	Type        string            `yaml:"type"` // "text", "image", "cairo"
-	Text        TextOverlay       `yaml:"text"`
-	Image       ImageOverlay      `yaml:"image"`
-	Cairo       CairoOverlay      `yaml:"cairo"`
-	Position    PositionConfig    `yaml:"position"`
+	Enabled  bool           `yaml:"enabled"`
+	Type     string         `yaml:"type"` // "text", "image", "cairo"
+	Text     TextOverlay    `yaml:"text"`
+	Image    ImageOverlay   `yaml:"image"`
+	Cairo    CairoOverlay   `yaml:"cairo"`
+	Position PositionConfig `yaml:"position"`
 }
 
 // TextOverlay represents text overlay configuration
@@ -54,9 +54,9 @@ type TextOverlay struct {
 
 // ImageOverlay represents image overlay configuration
 type ImageOverlay struct {
-	Path    string  `yaml:"path"`
-	Scale   float64 `yaml:"scale"`
-	Alpha   float64 `yaml:"alpha"`
+	Path  string  `yaml:"path"`
+	Scale float64 `yaml:"scale"`
+	Alpha float64 `yaml:"alpha"`
 }
 
 // CairoOverlay represents cairo overlay configuration

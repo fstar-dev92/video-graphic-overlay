@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-gst/go-glib/glib"
 	"github.com/go-gst/go-gst/gst"
 	"github.com/sirupsen/logrus"
 
@@ -18,7 +19,7 @@ type Pipeline struct {
 	logger   *logrus.Logger
 	pipeline *gst.Pipeline
 	bus      *gst.Bus
-	loop     *gst.MainLoop
+	loop     *glib.MainLoop
 	mutex    sync.RWMutex
 	running  bool
 }
@@ -31,7 +32,7 @@ func New(cfg *config.Config, logger *logrus.Logger) (*Pipeline, error) {
 	p := &Pipeline{
 		config: cfg,
 		logger: logger,
-		loop:   gst.NewMainLoop(gst.DefaultMainContext(), false),
+		loop:   glib.NewMainLoop(glib.MainContextDefault(), false),
 	}
 
 	if err := p.buildPipeline(); err != nil {
@@ -61,7 +62,7 @@ func (p *Pipeline) buildPipeline() error {
 	}
 
 	// Replace the pipeline with the parsed one
-	p.pipeline = elements.(*gst.Pipeline)
+	p.pipeline = elements
 
 	// Get bus for message handling
 	p.bus = p.pipeline.GetPipelineBus()
@@ -131,10 +132,7 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	p.logger.Info("Starting pipeline...")
 
 	// Set pipeline to playing state
-	ret := p.pipeline.SetState(gst.StatePlaying)
-	if ret == gst.StateChangeFailure {
-		return fmt.Errorf("failed to set pipeline to playing state")
-	}
+	p.pipeline.SetState(gst.StatePlaying)
 
 	p.running = true
 
@@ -162,10 +160,7 @@ func (p *Pipeline) Stop() error {
 	p.logger.Info("Stopping pipeline...")
 
 	// Set pipeline to null state
-	ret := p.pipeline.SetState(gst.StateNull)
-	if ret == gst.StateChangeFailure {
-		p.logger.Warn("Failed to set pipeline to null state")
-	}
+	p.pipeline.SetState(gst.StateNull)
 
 	// Quit main loop
 	p.loop.Quit()
@@ -183,7 +178,7 @@ func (p *Pipeline) handleMessages(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
-			msg := p.bus.TimedPop(100 * time.Millisecond)
+			msg := p.bus.TimedPop(gst.ClockTime(100 * time.Millisecond))
 			if msg == nil {
 				continue
 			}
@@ -193,18 +188,27 @@ func (p *Pipeline) handleMessages(ctx context.Context) {
 				p.logger.Info("End of stream received")
 				return
 			case gst.MessageError:
-				err, debug := msg.ParseError()
-				p.logger.Errorf("Pipeline error: %s (debug: %s)", err.Error(), debug)
+				err := msg.ParseError()
+				p.logger.Errorf("Pipeline error: %s", err.Error())
+				if debug := err.DebugString(); debug != "" {
+					p.logger.Errorf("Debug: %s", debug)
+				}
 				return
 			case gst.MessageWarning:
-				err, debug := msg.ParseWarning()
-				p.logger.Warnf("Pipeline warning: %s (debug: %s)", err.Error(), debug)
+				err := msg.ParseWarning()
+				p.logger.Warnf("Pipeline warning: %s", err.Error())
+				if debug := err.DebugString(); debug != "" {
+					p.logger.Warnf("Debug: %s", debug)
+				}
 			case gst.MessageInfo:
-				err, debug := msg.ParseInfo()
-				p.logger.Infof("Pipeline info: %s (debug: %s)", err.Error(), debug)
+				err := msg.ParseInfo()
+				p.logger.Infof("Pipeline info: %s", err.Error())
+				if debug := err.DebugString(); debug != "" {
+					p.logger.Infof("Debug: %s", debug)
+				}
 			case gst.MessageStateChanged:
-				if msg.Source() == p.pipeline.Element {
-					oldState, newState, _ := msg.ParseStateChanged()
+				if msg.Source() == p.pipeline.GetName() {
+					oldState, newState := msg.ParseStateChanged()
 					p.logger.Debugf("Pipeline state changed from %s to %s",
 						oldState.String(), newState.String())
 				}

@@ -36,7 +36,7 @@ func main() {
 	defer cancel()
 
 	// Create and start pipeline
-	p, err := pipeline.New(cfg, log)
+	p, err := pipeline.New(cfg, log.Logger)
 	if err != nil {
 		log.Fatalf("Failed to create pipeline: %v", err)
 	}
