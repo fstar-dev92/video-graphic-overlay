@@ -1,0 +1,33 @@
+input:
+  hls_url: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+  buffer_size: 2097152  # 2MB for better buffering
+  connection_retry: 5
+  timeout: 45
+
+output:
+  host: "239.1.1.1"  # Multicast address
+  port: 5000
+  bitrate: 4000000   # 4Mbps for higher quality
+  video_codec: "h264"
+  audio_codec: "aac"
+  format: "mpegts"
+
+overlay:
+  enabled: true
+  type: "text"
+  text:
+    content: "MULTICAST STREAM - {{.time}}"
+    font_size: 28
+    font_family: "Arial Bold"
+    color: "white"
+    background: "rgba(0,100,200,0.8)"
+  position:
+    x: 15
+    y: 15
+    anchor: "top-left"
+
+pipeline:
+  buffer_time: 300
+  latency_ms: 150
+  sync_on_clock: true
+  drop_on_latency: false  # Don't drop for multicast

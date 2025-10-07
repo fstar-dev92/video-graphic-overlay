@@ -1,0 +1,33 @@
+input:
+  hls_url: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+  buffer_size: 1048576
+  connection_retry: 3
+  timeout: 30
+
+output:
+  host: "127.0.0.1"
+  port: 5001
+  bitrate: 3000000
+  video_codec: "h264"
+  audio_codec: "aac"
+  format: "mpegts"
+
+overlay:
+  enabled: true
+  type: "text"
+  text:
+    content: "{{.timestamp}} - Channel 1"
+    font_size: 24
+    font_family: "Arial"
+    color: "yellow"
+    background: "rgba(0,0,0,0.7)"
+  position:
+    x: 10
+    y: 10
+    anchor: "top-left"
+
+pipeline:
+  buffer_time: 150
+  latency_ms: 75
+  sync_on_clock: true
+  drop_on_latency: true
