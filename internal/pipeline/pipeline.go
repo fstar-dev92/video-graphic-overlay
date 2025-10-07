@@ -27,6 +27,7 @@ type Pipeline struct {
 	// Pipeline elements
 	source        *gst.Element // souphttpsrc
 	demux         *gst.Element // hlsdemux
+	tsdemux       *gst.Element // tsdemux for MPEG-TS streams
 	videoQueue    *gst.Element // queue for video
 	audioQueue    *gst.Element // queue for audio
 	videoDecode   *gst.Element // decodebin for video
@@ -92,16 +93,23 @@ func (p *Pipeline) createElements() error {
 	var err error
 	cfg := p.config
 
-	// Create source element (souphttpsrc)
+	// Use improved souphttpsrc + hlsdemux approach (most reliable for streaming)
 	p.source, err = gst.NewElement("souphttpsrc")
 	if err != nil {
 		return fmt.Errorf("failed to create souphttpsrc: %w", err)
 	}
+
+	// Configure souphttpsrc with improved settings
 	p.source.SetProperty("location", cfg.Input.HLSUrl)
 	p.source.SetProperty("timeout", cfg.Input.Timeout)
 	p.source.SetProperty("retries", cfg.Input.ConnectionRetry)
 	p.source.SetProperty("user-agent", "GStreamer-HLS-Overlay/1.0")
 	p.source.SetProperty("automatic-redirect", true)
+	p.source.SetProperty("keep-alive", true)
+	p.source.SetProperty("compress", false)
+	// Add SSL/TLS settings for better HTTPS handling
+	p.source.SetProperty("ssl-strict", false)
+	p.logger.Info("Using improved souphttpsrc + hlsdemux for HLS streaming")
 
 	// Create demux element (hlsdemux)
 	p.demux, err = gst.NewElement("hlsdemux")
@@ -109,6 +117,14 @@ func (p *Pipeline) createElements() error {
 		return fmt.Errorf("failed to create hlsdemux: %w", err)
 	}
 	p.demux.SetProperty("connection-speed", uint(cfg.Input.BufferSize/1024))
+	// Set additional properties for better HLS handling
+	p.demux.SetProperty("start-bitrate", uint(cfg.Output.Bitrate/1000)) // Convert to kbps
+
+	// Create transport stream demux for MPEG-TS streams
+	p.tsdemux, err = gst.NewElement("tsdemux")
+	if err != nil {
+		return fmt.Errorf("failed to create tsdemux: %w", err)
+	}
 
 	// Create video processing elements
 	p.videoQueue, err = gst.NewElement("queue")
@@ -218,7 +234,7 @@ func (p *Pipeline) createElements() error {
 
 	// Add all elements to pipeline
 	elements := []*gst.Element{
-		p.source, p.demux, p.videoQueue, p.videoDecode, p.videoConv, p.videoScale,
+		p.source, p.demux, p.tsdemux, p.videoQueue, p.videoDecode, p.videoConv, p.videoScale,
 		p.audioQueue, p.audioDecode, p.audioConv, p.audioResamp,
 		p.videoEnc, p.audioEnc, p.videoEncQueue, p.audioEncQueue, p.mux, p.sink,
 	}
@@ -238,7 +254,7 @@ func (p *Pipeline) createElements() error {
 
 // linkElements links all GStreamer elements in the pipeline
 func (p *Pipeline) linkElements() error {
-	// Link source to demux
+	// Link souphttpsrc to hlsdemux
 	if err := p.source.Link(p.demux); err != nil {
 		return fmt.Errorf("failed to link source to demux: %w", err)
 	}
@@ -246,27 +262,126 @@ func (p *Pipeline) linkElements() error {
 	// Set up pad-added callback for demux (HLS demux creates pads dynamically)
 	p.demux.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
 		padName := pad.GetName()
-		p.logger.Debugf("New pad added: %s", padName)
+		p.logger.Infof("New pad added: %s", padName)
 
-		if strings.Contains(padName, "video") {
-			// Link video path
-			sinkPad := p.videoQueue.GetStaticPad("sink")
-			if sinkPad != nil {
-				if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
-					p.logger.Errorf("Failed to link demux video pad: %v", linkReturn)
-				}
-				sinkPad.Unref()
-			}
-		} else if strings.Contains(padName, "audio") {
-			// Link audio path
-			sinkPad := p.audioQueue.GetStaticPad("sink")
-			if sinkPad != nil {
-				if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
-					p.logger.Errorf("Failed to link demux audio pad: %v", linkReturn)
-				}
-				sinkPad.Unref()
-			}
+		// Get pad capabilities to determine media type
+		caps := pad.GetCurrentCaps()
+		if caps == nil {
+			caps = pad.QueryCaps(nil)
 		}
+
+		if caps != nil {
+			structure := caps.GetStructureAt(0)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("Pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "video/mpegts") || strings.HasPrefix(mediaType, "video/mp2t") {
+					// MPEG-TS stream - link to tsdemux for further demuxing
+					sinkPad := p.tsdemux.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link demux MPEG-TS pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked MPEG-TS pad %s to tsdemux", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("TS demux sink pad not available or already linked for pad %s", padName)
+					}
+				} else if strings.HasPrefix(mediaType, "video/") {
+					// Direct video stream - link to video queue
+					sinkPad := p.videoQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link demux video pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked video pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Video sink pad not available or already linked for pad %s", padName)
+					}
+				} else if strings.HasPrefix(mediaType, "audio/") {
+					// Direct audio stream - link to audio queue
+					sinkPad := p.audioQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link demux audio pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked audio pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Audio sink pad not available or already linked for pad %s", padName)
+					}
+				}
+			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for pad %s", padName)
+		}
+	})
+
+	// Set up no-more-pads callback to know when all pads have been created
+	p.demux.Connect("no-more-pads", func(element *gst.Element) {
+		p.logger.Info("HLS demux finished creating all pads")
+	})
+
+	// Set up pad-added callback for tsdemux (handles MPEG-TS demuxing)
+	p.tsdemux.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
+		padName := pad.GetName()
+		p.logger.Infof("TS demux new pad added: %s", padName)
+
+		// Get pad capabilities to determine media type
+		caps := pad.GetCurrentCaps()
+		if caps == nil {
+			caps = pad.QueryCaps(nil)
+		}
+
+		if caps != nil {
+			structure := caps.GetStructureAt(0)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("TS demux pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "video/") {
+					// Link video stream to video queue
+					sinkPad := p.videoQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link TS demux video pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked TS demux video pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Video sink pad not available or already linked for TS demux pad %s", padName)
+					}
+				} else if strings.HasPrefix(mediaType, "audio/") {
+					// Link audio stream to audio queue
+					sinkPad := p.audioQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link TS demux audio pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked TS demux audio pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Audio sink pad not available or already linked for TS demux pad %s", padName)
+					}
+				}
+			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for TS demux pad %s", padName)
+		}
+	})
+
+	// Set up no-more-pads callback for tsdemux
+	p.tsdemux.Connect("no-more-pads", func(element *gst.Element) {
+		p.logger.Info("TS demux finished creating all pads")
 	})
 
 	// Link video processing chain
@@ -291,18 +406,33 @@ func (p *Pipeline) linkElements() error {
 func (p *Pipeline) linkVideoChain() error {
 	// Set up pad-added callback for video decodebin
 	p.videoDecode.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
+		padName := pad.GetName()
+		p.logger.Infof("Video decoder new pad added: %s", padName)
+
 		caps := pad.GetCurrentCaps()
 		if caps != nil {
 			structure := caps.GetStructureAt(0)
-			if structure != nil && strings.HasPrefix(structure.Name(), "video/") {
-				sinkPad := p.videoConv.GetStaticPad("sink")
-				if sinkPad != nil {
-					if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
-						p.logger.Errorf("Failed to link video decode pad: %v", linkReturn)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("Video decoder pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "video/") {
+					sinkPad := p.videoConv.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link video decode pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked video decoder pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Video converter sink pad not available or already linked for pad %s", padName)
 					}
-					sinkPad.Unref()
 				}
 			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for video decoder pad %s", padName)
 		}
 	})
 
@@ -337,18 +467,33 @@ func (p *Pipeline) linkVideoChain() error {
 func (p *Pipeline) linkAudioChain() error {
 	// Set up pad-added callback for audio decodebin
 	p.audioDecode.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
+		padName := pad.GetName()
+		p.logger.Infof("Audio decoder new pad added: %s", padName)
+
 		caps := pad.GetCurrentCaps()
 		if caps != nil {
 			structure := caps.GetStructureAt(0)
-			if structure != nil && strings.HasPrefix(structure.Name(), "audio/") {
-				sinkPad := p.audioConv.GetStaticPad("sink")
-				if sinkPad != nil {
-					if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
-						p.logger.Errorf("Failed to link audio decode pad: %v", linkReturn)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("Audio decoder pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "audio/") {
+					sinkPad := p.audioConv.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link audio decode pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked audio decoder pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Audio converter sink pad not available or already linked for pad %s", padName)
 					}
-					sinkPad.Unref()
 				}
 			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for audio decoder pad %s", padName)
 		}
 	})
 

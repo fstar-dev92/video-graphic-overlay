@@ -33,22 +33,21 @@ func NewHLSInput(cfg *config.InputConfig) (*HLSInput, error) {
 func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 	var elements []*gst.Element
 
-	// Create souphttpsrc element
+	// Use improved souphttpsrc (most reliable for HLS streaming)
 	source, err := gst.NewElement("souphttpsrc")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create souphttpsrc: %w", err)
 	}
 
-	// Configure souphttpsrc
+	// Configure souphttpsrc with improved settings
 	source.SetProperty("location", h.config.HLSUrl)
 	source.SetProperty("timeout", h.config.Timeout)
 	source.SetProperty("retries", h.config.ConnectionRetry)
-
-	// Set user agent for better compatibility
 	source.SetProperty("user-agent", "GStreamer-HLS-Overlay/1.0")
-
-	// Enable automatic retries
 	source.SetProperty("automatic-redirect", true)
+	source.SetProperty("keep-alive", true)
+	source.SetProperty("compress", false)
+	source.SetProperty("ssl-strict", false) // Better HTTPS handling
 
 	h.source = source
 	elements = append(elements, source)
@@ -60,9 +59,8 @@ func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 	}
 
 	// Configure hlsdemux for low latency
-	// Note: max-buffering-time property doesn't exist in newer GStreamer versions
-	// Use connection-speed instead for better performance
 	demux.SetProperty("connection-speed", uint(h.config.BufferSize/1024)) // Convert to kbps
+	demux.SetProperty("start-bitrate", uint(2000))                        // Start with 2Mbps
 
 	h.demux = demux
 	elements = append(elements, demux)
@@ -73,12 +71,14 @@ func (h *HLSInput) CreateElements() ([]*gst.Element, error) {
 // GetPipelineString returns the pipeline string for HLS input
 func (h *HLSInput) GetPipelineString() string {
 	return fmt.Sprintf("souphttpsrc location=%s timeout=%d retries=%d "+
-		"user-agent=\"GStreamer-HLS-Overlay/1.0\" automatic-redirect=true ! "+
-		"hlsdemux connection-speed=%d name=demux",
+		"user-agent=\"GStreamer-HLS-Overlay/1.0\" automatic-redirect=true "+
+		"keep-alive=true compress=false ssl-strict=false ! "+
+		"hlsdemux connection-speed=%d start-bitrate=%d name=demux",
 		h.config.HLSUrl,
 		h.config.Timeout,
 		h.config.ConnectionRetry,
-		h.config.BufferSize/1024) // Convert to kbps
+		h.config.BufferSize/1024, // Convert to kbps
+		2000)                     // Start with 2Mbps
 }
 
 // validateHLSURL validates the HLS URL format
