@@ -3,7 +3,7 @@ input:
   buffer_size: 1048576  # 1MB
   connection_retry: 3
   timeout: 30
-  source_type: "souphttpsrc"  # Options: "souphttpsrc", "playbin3", "urisourcebin"
+  source_type: "playbin3"  # Options: "playbin3"
 
 output:
   host: "127.0.0.1"

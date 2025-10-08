@@ -58,13 +58,15 @@ source_type: "souphttpsrc"
 source_type: "playbin3"
 ```
 
-**Pipeline**: `playbin3 → processing` (internal demuxing)
+**Pipeline**: `playbin3 → processing` (complete internal pipeline)
 
 **Advantages:**
 - Simplified pipeline setup
 - Automatic adaptive streaming support
 - Built-in error recovery
-- Automatic source selection
+- Automatic source selection and demuxing
+- Complete media player functionality
+- Typically outputs decoded raw streams
 - Less code complexity
 
 **Disadvantages:**
@@ -73,6 +75,8 @@ source_type: "playbin3"
 - Limited customization options
 
 **Best for:** Simple deployments, rapid prototyping, automatic quality adaptation
+
+**Key Feature**: playbin3 is a complete media player that handles source, demuxing, and often decoding internally. No separate source, demux, or decode elements are needed.
 
 ### urisourcebin
 ```yaml
@@ -83,7 +87,9 @@ source_type: "urisourcebin"
 
 **Advantages:**
 - Good balance of automation and control
-- Automatic source selection
+- Automatic source selection and demuxing
+- No separate demux elements needed
+- Can output raw or compressed streams
 - Easier than manual souphttpsrc setup
 - Still provides access to demuxed streams
 
@@ -92,6 +98,8 @@ source_type: "urisourcebin"
 - Some automatic behavior you can't override
 
 **Best for:** Most production use cases requiring reliability with some control
+
+**Key Feature**: urisourcebin includes its own demuxing capabilities, so no separate hlsdemux or tsdemux elements are needed. This results in a cleaner, more efficient pipeline.
 
 ## Migration Steps
 

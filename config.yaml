@@ -1,12 +1,13 @@
 input:
-  hls_url: "https://example.com/stream/playlist.m3u8"
+  hls_url: "https://hls.showfer.com/live/KiioJ/Jacob-AD/adstorm.m3u8"
   buffer_size: 1048576  # 1MB
   connection_retry: 3
   timeout: 30
+  source_type: "playbin3"  # Options: "souphttpsrc", "playbin3", "urisourcebin"
 
 output:
   host: "127.0.0.1"
-  port: 5000
+  port: 6000
   bitrate: 2000000  # 2Mbps
   video_codec: "h264"
   audio_codec: "aac"
@@ -16,7 +17,7 @@ overlay:
   enabled: true
   type: "text"  # "text", "image", "cairo"
   text:
-    content: "Live Stream - {{.timestamp}}"
+    content: "Live Stream - Showfer"
     font_size: 24
     font_family: "Arial"
     color: "white"
@@ -35,7 +36,7 @@ overlay:
     anchor: "top-left"  # "top-left", "top-right", "bottom-left", "bottom-right", "center"
 
 pipeline:
-  buffer_time: 200
-  latency_ms: 100
-  sync_on_clock: true
-  drop_on_latency: true
+  buffer_time: 600
+  latency_ms: 400
+  sync_on_clock: false
+  drop_on_latency: false

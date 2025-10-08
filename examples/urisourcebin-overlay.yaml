@@ -3,7 +3,7 @@ input:
   buffer_size: 1048576
   connection_retry: 3
   timeout: 30
-  source_type: "urisourcebin"  # Use urisourcebin for semi-automatic HLS handling
+  source_type: "playbin3"  # Use playbin3 for automatic HLS handling
 
 output:
   host: "127.0.0.1"
@@ -17,7 +17,7 @@ overlay:
   enabled: true
   type: "text"
   text:
-    content: "URISOURCEBIN STREAM - {{.time}}"
+    content: "PLAYBIN3 STREAM - {{.time}}"
     font_size: 32
     font_family: "Arial Bold"
     color: "white"

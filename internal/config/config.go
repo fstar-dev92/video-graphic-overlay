@@ -21,7 +21,7 @@ type InputConfig struct {
 	BufferSize      int    `yaml:"buffer_size"`
 	ConnectionRetry int    `yaml:"connection_retry"`
 	Timeout         int    `yaml:"timeout"`
-	SourceType      string `yaml:"source_type"` // "souphttpsrc", "playbin3", "urisourcebin"
+	SourceType      string `yaml:"source_type"` // "playbin3"
 }
 
 // OutputConfig represents UDP output configuration
@@ -90,7 +90,7 @@ func Load(path string) (*Config, error) {
 			BufferSize:      1024 * 1024, // 1MB
 			ConnectionRetry: 3,
 			Timeout:         30,
-			SourceType:      "souphttpsrc", // Default to current implementation
+			SourceType:      "playbin3", // Default to playbin3 implementation
 		},
 		Output: OutputConfig{
 			Host:       "127.0.0.1",
