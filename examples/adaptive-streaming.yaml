@@ -1,0 +1,41 @@
+input:
+  hls_url: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+  buffer_size: 2097152  # 2MB for better buffering
+  connection_retry: 3
+  timeout: 30
+  source_type: "playbin3"
+  
+  # Adaptive streaming configuration
+  # Set to 0 for automatic selection, or specify values to control selection
+  max_bitrate: 8000000      # 8Mbps max - prevents selecting highest quality
+  min_bitrate: 2000000      # 2Mbps min - ensures minimum quality
+  preferred_width: 1920     # Prefer 1080p resolution
+  preferred_height: 1080
+
+output:
+  host: "127.0.0.1"
+  port: 5000
+  bitrate: 4000000  # 4Mbps output
+  video_codec: "h264"
+  audio_codec: "aac"
+  format: "mpegts"
+
+overlay:
+  enabled: true
+  type: "text"
+  text:
+    content: "ADAPTIVE STREAM - {{.time}}"
+    font_size: 28
+    font_family: "Arial Bold"
+    color: "white"
+    background: "rgba(0,100,200,0.8)"
+  position:
+    x: 20
+    y: 20
+    anchor: "top-left"
+
+pipeline:
+  buffer_time: 300      # 300ms target buffer
+  latency_ms: 200      # 200ms latency
+  sync_on_clock: true
+  drop_on_latency: true

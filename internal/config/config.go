@@ -22,6 +22,14 @@ type InputConfig struct {
 	ConnectionRetry int    `yaml:"connection_retry"`
 	Timeout         int    `yaml:"timeout"`
 	SourceType      string `yaml:"source_type"` // "playbin3"
+	// Adaptive streaming options
+	MaxBitrate      int `yaml:"max_bitrate"`      // Maximum bitrate to select (0 = auto)
+	MinBitrate      int `yaml:"min_bitrate"`      // Minimum bitrate to select (0 = auto)
+	PreferredWidth  int `yaml:"preferred_width"`  // Preferred resolution width (0 = auto)
+	PreferredHeight int `yaml:"preferred_height"` // Preferred resolution height (0 = auto)
+	// HLS parsing options
+	ParseMasterPlaylist bool   `yaml:"parse_master_playlist"` // Enable master playlist parsing
+	StreamSelection     string `yaml:"stream_selection"`      // "highest", "lowest", "bandwidth", "auto"
 }
 
 // OutputConfig represents UDP output configuration
@@ -32,6 +40,9 @@ type OutputConfig struct {
 	VideoCodec string `yaml:"video_codec"`
 	AudioCodec string `yaml:"audio_codec"`
 	Format     string `yaml:"format"`
+	// Output video resolution
+	Width  int `yaml:"width"`  // Output video width (0 = use input preferred)
+	Height int `yaml:"height"` // Output video height (0 = use input preferred)
 }
 
 // OverlayConfig represents graphic overlay configuration
@@ -87,10 +98,12 @@ func Load(path string) (*Config, error) {
 	// Set default configuration
 	cfg := &Config{
 		Input: InputConfig{
-			BufferSize:      1024 * 1024, // 1MB
-			ConnectionRetry: 3,
-			Timeout:         30,
-			SourceType:      "playbin3", // Default to playbin3 implementation
+			BufferSize:          1024 * 1024, // 1MB
+			ConnectionRetry:     3,
+			Timeout:             30,
+			SourceType:          "playbin3", // Default to playbin3 implementation
+			ParseMasterPlaylist: true,       // Enable master playlist parsing by default
+			StreamSelection:     "highest",  // Select highest quality by default
 		},
 		Output: OutputConfig{
 			Host:       "127.0.0.1",

@@ -1,0 +1,46 @@
+input:
+  hls_url: "https://hls.showfer.com/live/KiioJ/Jacob-AD/adstorm.m3u8"
+  buffer_size: 1048576
+  connection_retry: 3
+  timeout: 30
+  source_type: "playbin3"
+  
+  # HLS parsing configuration - Select by bandwidth
+  parse_master_playlist: true
+  stream_selection: "bandwidth"    # Will select highest bandwidth stream
+  
+  # Limit bandwidth to reasonable level
+  max_bitrate: 3000000      # 3Mbps max
+  min_bitrate: 1000000      # 1Mbps min
+  preferred_width: 1280      # Prefer 720p
+  preferred_height: 720
+
+output:
+  host: "127.0.0.1"
+  port: 5000
+  bitrate: 2500000  # 2.5Mbps output
+  video_codec: "h264"
+  audio_codec: "aac"
+  format: "mpegts"
+  width: 1280      # Force 720p output
+  height: 720
+
+overlay:
+  enabled: true
+  type: "text"
+  text:
+    content: "BANDWIDTH OPTIMIZED - {{.time}}"
+    font_size: 24
+    font_family: "Arial"
+    color: "white"
+    background: "rgba(200,100,0,0.8)"
+  position:
+    x: 20
+    y: 20
+    anchor: "top-left"
+
+pipeline:
+  buffer_time: 200
+  latency_ms: 150
+  sync_on_clock: true
+  drop_on_latency: true

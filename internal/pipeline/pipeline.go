@@ -24,21 +24,22 @@ type Pipeline struct {
 	running  bool
 
 	// Pipeline elements
-	source        *gst.Element // playbin3
-	videoConv     *gst.Element // videoconvert
-	audioConv     *gst.Element // audioconvert
-	videoScale    *gst.Element // videoscale
-	audioResamp   *gst.Element // audioresample
-	audioRate     *gst.Element // audiorate for consistent timing
-	overlay       *gst.Element // text/image overlay (optional)
-	videoEnc      *gst.Element // video encoder
-	audioEnc      *gst.Element // audio encoder
-	videoEncQueue *gst.Element // queue after video encoder
-	audioEncQueue *gst.Element // queue after audio encoder
-	videoCaps     *gst.Element // caps filter for video
-	audioCaps     *gst.Element // caps filter for audio
-	mux           *gst.Element // muxer
-	sink          *gst.Element // udpsink
+	source         *gst.Element // playbin3
+	videoConv      *gst.Element // videoconvert
+	audioConv      *gst.Element // audioconvert
+	videoScale     *gst.Element // videoscale
+	videoScaleCaps *gst.Element // caps filter after videoscale
+	audioResamp    *gst.Element // audioresample
+	audioRate      *gst.Element // audiorate for consistent timing
+	overlay        *gst.Element // text/image overlay (optional)
+	videoEnc       *gst.Element // video encoder
+	audioEnc       *gst.Element // audio encoder
+	videoEncQueue  *gst.Element // queue after video encoder
+	audioEncQueue  *gst.Element // queue after audio encoder
+	videoCaps      *gst.Element // caps filter for video
+	audioCaps      *gst.Element // caps filter for audio
+	mux            *gst.Element // muxer
+	sink           *gst.Element // udpsink
 }
 
 // New creates a new pipeline instance
@@ -103,6 +104,36 @@ func (p *Pipeline) createElements() error {
 	p.videoScale, err = gst.NewElement("videoscale")
 	if err != nil {
 		return fmt.Errorf("failed to create videoscale: %w", err)
+	}
+
+	// Create caps filter for video scaling to ensure proper output resolution
+	p.videoScaleCaps, err = gst.NewElement("capsfilter")
+	if err != nil {
+		return fmt.Errorf("failed to create video scale caps filter: %w", err)
+	}
+
+	// Set output video caps based on configuration or default to 1920x1080
+	outputWidth := 1920
+	outputHeight := 1080
+
+	// Priority: Output config > Input preferred > Default
+	if cfg.Output.Width > 0 && cfg.Output.Height > 0 {
+		outputWidth = cfg.Output.Width
+		outputHeight = cfg.Output.Height
+		p.logger.Infof("Using output resolution from config: %dx%d", outputWidth, outputHeight)
+	} else if cfg.Input.PreferredWidth > 0 && cfg.Input.PreferredHeight > 0 {
+		outputWidth = cfg.Input.PreferredWidth
+		outputHeight = cfg.Input.PreferredHeight
+		p.logger.Infof("Using input preferred resolution: %dx%d", outputWidth, outputHeight)
+	} else {
+		p.logger.Infof("Using default output resolution: %dx%d", outputWidth, outputHeight)
+	}
+
+	videoCapsStr := fmt.Sprintf("video/x-raw,width=%d,height=%d", outputWidth, outputHeight)
+	videoScaleCaps := gst.NewCapsFromString(videoCapsStr)
+	if videoScaleCaps != nil {
+		p.videoScaleCaps.SetProperty("caps", videoScaleCaps)
+		p.logger.Infof("Setting video output resolution to %dx%d", outputWidth, outputHeight)
 	}
 
 	// Create audio processing elements
@@ -225,7 +256,7 @@ func (p *Pipeline) createElements() error {
 
 	// Add all elements to pipeline
 	elements := []*gst.Element{
-		p.source, p.videoConv, p.videoScale,
+		p.source, p.videoConv, p.videoScale, p.videoScaleCaps,
 		p.audioConv, p.audioResamp, p.audioRate,
 		p.videoEnc, p.audioEnc, p.videoEncQueue, p.audioEncQueue, p.mux, p.sink,
 	}
@@ -249,6 +280,39 @@ func (p *Pipeline) createElements() error {
 func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 	var err error
 
+	// Parse master playlist if enabled
+	finalURL := cfg.Input.HLSUrl
+	if cfg.Input.ParseMasterPlaylist {
+		playlist, err := ParseHLSMasterPlaylist(cfg.Input.HLSUrl, p.logger)
+		if err != nil {
+			p.logger.Warnf("Failed to parse master playlist, using original URL: %v", err)
+		} else {
+			// Select best stream based on configuration
+			selection := cfg.Input.StreamSelection
+			if selection == "" {
+				selection = "highest"
+			}
+
+			bestStream := playlist.SelectBestStream(selection)
+			if bestStream != nil {
+				finalURL = bestStream.URL
+				p.logger.Infof("Selected stream: %dx%d, %d bps (%s)",
+					bestStream.Width, bestStream.Height,
+					bestStream.Bandwidth, selection)
+
+				// Update preferred resolution if not set
+				if cfg.Input.PreferredWidth == 0 && cfg.Input.PreferredHeight == 0 {
+					cfg.Input.PreferredWidth = bestStream.Width
+					cfg.Input.PreferredHeight = bestStream.Height
+					p.logger.Infof("Updated preferred resolution to %dx%d",
+						bestStream.Width, bestStream.Height)
+				}
+			} else {
+				p.logger.Warnf("No suitable stream found, using original URL")
+			}
+		}
+	}
+
 	// Create playbin3 element - it handles source, demuxing, and decoding internally
 	p.source, err = gst.NewElement("playbin3")
 	if err != nil {
@@ -256,7 +320,7 @@ func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 	}
 
 	// Configure playbin3
-	p.source.SetProperty("uri", cfg.Input.HLSUrl)
+	p.source.SetProperty("uri", finalURL)
 
 	// Set flags to enable video and audio, disable text/subtitles
 	// GST_PLAY_FLAG_VIDEO (1) + GST_PLAY_FLAG_AUDIO (2) = 3
@@ -328,7 +392,7 @@ func (p *Pipeline) linkPlaybin3Elements() error {
 	}
 
 	// Link video processing elements
-	elements := []*gst.Element{p.videoConv, p.videoScale}
+	elements := []*gst.Element{p.videoConv, p.videoScale, p.videoScaleCaps}
 	if p.overlay != nil {
 		elements = append(elements, p.overlay)
 	}

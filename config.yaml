@@ -3,7 +3,15 @@ input:
   buffer_size: 1048576  # 1MB
   connection_retry: 3
   timeout: 30
-  source_type: "playbin3"  # Options: "souphttpsrc", "playbin3", "urisourcebin"
+  source_type: "playbin3"  # Options: "playbin3"
+  # Adaptive streaming configuration
+  max_bitrate: 5000000      # 5Mbps max bitrate (0 = auto)
+  min_bitrate: 1000000      # 1Mbps min bitrate (0 = auto)
+  preferred_width: 1920     # Preferred resolution width (0 = auto)
+  preferred_height: 1080    # Preferred resolution height (0 = auto)
+  # HLS parsing configuration
+  parse_master_playlist: true    # Enable master playlist parsing
+  stream_selection: "highest"    # "highest", "lowest", "bandwidth", "auto"
 
 output:
   host: "127.0.0.1"
@@ -12,10 +20,13 @@ output:
   video_codec: "h264"
   audio_codec: "aac"
   format: "mpegts"
+  # Output video resolution (overrides input preferred resolution)
+  width: 1920      # Output width (0 = use input preferred)
+  height: 1080     # Output height (0 = use input preferred)
 
 overlay:
   enabled: true
-  type: "text"  # "text", "image", "cairo"
+  type: "image"  # "text", "image", "cairo"
   text:
     content: "Live Stream - Showfer"
     font_size: 24
@@ -23,7 +34,7 @@ overlay:
     color: "white"
     background: "rgba(0,0,0,0.5)"
   image:
-    path: "/path/to/logo.png"
+    path: "./logo.png"
     scale: 1.0
     alpha: 0.8
   cairo:
