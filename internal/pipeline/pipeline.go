@@ -25,9 +25,9 @@ type Pipeline struct {
 	running  bool
 
 	// Pipeline elements
-	source        *gst.Element // souphttpsrc
-	demux         *gst.Element // hlsdemux
-	tsdemux       *gst.Element // tsdemux for MPEG-TS streams
+	source        *gst.Element // playbin3 or urisourcebin (replaces souphttpsrc)
+	demux         *gst.Element // hlsdemux (only used with souphttpsrc approach)
+	tsdemux       *gst.Element // tsdemux for MPEG-TS streams (only used with souphttpsrc approach)
 	videoQueue    *gst.Element // queue for video
 	audioQueue    *gst.Element // queue for audio
 	videoParser   *gst.Element // h264parse for video
@@ -38,11 +38,14 @@ type Pipeline struct {
 	audioConv     *gst.Element // audioconvert
 	videoScale    *gst.Element // videoscale
 	audioResamp   *gst.Element // audioresample
+	audioRate     *gst.Element // audiorate for consistent timing
 	overlay       *gst.Element // text/image overlay (optional)
 	videoEnc      *gst.Element // video encoder
 	audioEnc      *gst.Element // audio encoder
 	videoEncQueue *gst.Element // queue after video encoder
 	audioEncQueue *gst.Element // queue after audio encoder
+	videoCaps     *gst.Element // caps filter for video
+	audioCaps     *gst.Element // caps filter for audio
 	mux           *gst.Element // muxer
 	sink          *gst.Element // udpsink
 }
@@ -95,37 +98,9 @@ func (p *Pipeline) createElements() error {
 	var err error
 	cfg := p.config
 
-	// Use improved souphttpsrc + hlsdemux approach (most reliable for streaming)
-	p.source, err = gst.NewElement("souphttpsrc")
-	if err != nil {
-		return fmt.Errorf("failed to create souphttpsrc: %w", err)
-	}
-
-	// Configure souphttpsrc with improved settings
-	p.source.SetProperty("location", cfg.Input.HLSUrl)
-	p.source.SetProperty("timeout", cfg.Input.Timeout)
-	p.source.SetProperty("retries", cfg.Input.ConnectionRetry)
-	p.source.SetProperty("user-agent", "GStreamer-HLS-Overlay/1.0")
-	p.source.SetProperty("automatic-redirect", true)
-	p.source.SetProperty("keep-alive", true)
-	p.source.SetProperty("compress", false)
-	// Add SSL/TLS settings for better HTTPS handling
-	p.source.SetProperty("ssl-strict", false)
-	p.logger.Info("Using improved souphttpsrc + hlsdemux for HLS streaming")
-
-	// Create demux element (hlsdemux)
-	p.demux, err = gst.NewElement("hlsdemux")
-	if err != nil {
-		return fmt.Errorf("failed to create hlsdemux: %w", err)
-	}
-	p.demux.SetProperty("connection-speed", uint(cfg.Input.BufferSize/1024))
-	// Set additional properties for better HLS handling
-	p.demux.SetProperty("start-bitrate", uint(cfg.Output.Bitrate/1000)) // Convert to kbps
-
-	// Create transport stream demux for MPEG-TS streams
-	p.tsdemux, err = gst.NewElement("tsdemux")
-	if err != nil {
-		return fmt.Errorf("failed to create tsdemux: %w", err)
+	// Create source element based on configuration
+	if err := p.createSourceElement(cfg); err != nil {
+		return fmt.Errorf("failed to create source element: %w", err)
 	}
 
 	// Create video processing elements
@@ -185,6 +160,13 @@ func (p *Pipeline) createElements() error {
 	if err != nil {
 		return fmt.Errorf("failed to create audioresample: %w", err)
 	}
+	// Configure audio resampler for consistent output
+	p.audioResamp.SetProperty("quality", 4) // Good quality resampling
+
+	p.audioRate, err = gst.NewElement("audiorate")
+	if err != nil {
+		return fmt.Errorf("failed to create audiorate: %w", err)
+	}
 
 	// Create overlay element if enabled
 	if cfg.Overlay.Enabled {
@@ -198,6 +180,11 @@ func (p *Pipeline) createElements() error {
 			p.overlay.SetProperty("text", cfg.Overlay.Text.Content)
 			p.overlay.SetProperty("font-desc", fmt.Sprintf("%s %d", cfg.Overlay.Text.FontFamily, cfg.Overlay.Text.FontSize))
 			p.overlay.SetProperty("color", parseColor(cfg.Overlay.Text.Color))
+			p.overlay.SetProperty("halignment", "left")
+			p.overlay.SetProperty("valignment", "top")
+			p.overlay.SetProperty("xpad", cfg.Overlay.Position.X)
+			p.overlay.SetProperty("ypad", cfg.Overlay.Position.Y)
+			p.logger.Info("Text overlay configured successfully")
 		case "image":
 			p.overlay, err = gst.NewElement("gdkpixbufoverlay")
 			if err != nil {
@@ -205,6 +192,9 @@ func (p *Pipeline) createElements() error {
 			}
 			p.overlay.SetProperty("location", cfg.Overlay.Image.Path)
 			p.overlay.SetProperty("alpha", cfg.Overlay.Image.Alpha)
+			p.overlay.SetProperty("offset-x", cfg.Overlay.Position.X)
+			p.overlay.SetProperty("offset-y", cfg.Overlay.Position.Y)
+			p.logger.Info("Image overlay configured successfully")
 		}
 	}
 
@@ -230,10 +220,41 @@ func (p *Pipeline) createElements() error {
 		return fmt.Errorf("failed to create audio encoder queue: %w", err)
 	}
 
+	// Create caps filters for proper format negotiation
+	p.videoCaps, err = gst.NewElement("capsfilter")
+	if err != nil {
+		return fmt.Errorf("failed to create video caps filter: %w", err)
+	}
+	// Set video caps for H.264
+	videoCaps := gst.NewCapsFromString("video/x-h264,stream-format=avc,alignment=au")
+	if videoCaps != nil {
+		p.videoCaps.SetProperty("caps", videoCaps)
+	}
+
+	p.audioCaps, err = gst.NewElement("capsfilter")
+	if err != nil {
+		return fmt.Errorf("failed to create audio caps filter: %w", err)
+	}
+	// Set audio caps for AAC
+	audioCaps := gst.NewCapsFromString("audio/mpeg,mpegversion=4,stream-format=raw")
+	if audioCaps != nil {
+		p.audioCaps.SetProperty("caps", audioCaps)
+	}
+
 	// Create muxer
 	p.mux, err = p.createMuxer(cfg.Output.Format)
 	if err != nil {
 		return fmt.Errorf("failed to create muxer: %w", err)
+	}
+
+	// Configure muxer for better streaming
+	if cfg.Output.Format == "mpegts" {
+		// Set properties for MPEG-TS muxer to improve streaming
+		p.mux.SetProperty("alignment", 7)               // Align to 188 bytes (TS packet size)
+		p.mux.SetProperty("latency", uint64(400000000)) // 400ms latency (matching config)
+		p.mux.SetProperty("min-upstream-latency", uint64(0))
+		// Ensure both video and audio are included in the program
+		p.mux.SetProperty("prog-map", "program_map,video_0=0,audio_0=0")
 	}
 
 	// Create sink
@@ -243,14 +264,23 @@ func (p *Pipeline) createElements() error {
 	}
 	p.sink.SetProperty("host", cfg.Output.Host)
 	p.sink.SetProperty("port", cfg.Output.Port)
-	p.sink.SetProperty("sync", false)
-	p.sink.SetProperty("async", false)
+	// p.sink.SetProperty("sync", false)
+	// p.sink.SetProperty("async", false)
+	p.sink.SetProperty("buffer-size", 65536) // 64KB buffer for UDP
 
 	// Add all elements to pipeline
 	elements := []*gst.Element{
-		p.source, p.demux, p.tsdemux, p.videoQueue, p.videoParser, p.videoDecode, p.videoConv, p.videoScale,
-		p.audioQueue, p.audioParser, p.audioDecode, p.audioConv, p.audioResamp,
+		p.source, p.videoQueue, p.videoParser, p.videoDecode, p.videoConv, p.videoScale,
+		p.audioQueue, p.audioParser, p.audioDecode, p.audioConv, p.audioResamp, p.audioRate,
 		p.videoEnc, p.audioEnc, p.videoEncQueue, p.audioEncQueue, p.mux, p.sink,
+	}
+
+	// Add demux elements only if they exist (souphttpsrc approach)
+	if p.demux != nil {
+		elements = append(elements, p.demux)
+	}
+	if p.tsdemux != nil {
+		elements = append(elements, p.tsdemux)
 	}
 
 	if p.overlay != nil {
@@ -258,16 +288,140 @@ func (p *Pipeline) createElements() error {
 	}
 
 	for _, element := range elements {
-		if err := p.pipeline.Add(element); err != nil {
-			return fmt.Errorf("failed to add element %s to pipeline: %w", element.GetName(), err)
+		if element != nil {
+			if err := p.pipeline.Add(element); err != nil {
+				return fmt.Errorf("failed to add element %s to pipeline: %w", element.GetName(), err)
+			}
 		}
 	}
 
 	return nil
 }
 
+// createSourceElement creates the appropriate source element based on configuration
+func (p *Pipeline) createSourceElement(cfg *config.Config) error {
+	switch cfg.Input.SourceType {
+	case "playbin3":
+		return p.createPlaybin3Source(cfg)
+	case "urisourcebin":
+		return p.createUrisourcebinSource(cfg)
+	case "souphttpsrc":
+		fallthrough
+	default:
+		return p.createSouphttpsrcSource(cfg)
+	}
+}
+
+// createSouphttpsrcSource creates the traditional souphttpsrc + hlsdemux + tsdemux chain
+func (p *Pipeline) createSouphttpsrcSource(cfg *config.Config) error {
+	var err error
+
+	// Use improved souphttpsrc + hlsdemux approach (most reliable for streaming)
+	p.source, err = gst.NewElement("souphttpsrc")
+	if err != nil {
+		return fmt.Errorf("failed to create souphttpsrc: %w", err)
+	}
+
+	// Configure souphttpsrc with improved settings
+	p.source.SetProperty("location", cfg.Input.HLSUrl)
+	p.source.SetProperty("timeout", cfg.Input.Timeout)
+	p.source.SetProperty("retries", cfg.Input.ConnectionRetry)
+	p.source.SetProperty("user-agent", "GStreamer-HLS-Overlay/1.0")
+	p.source.SetProperty("automatic-redirect", true)
+	p.source.SetProperty("keep-alive", true)
+	p.source.SetProperty("compress", false)
+	// Add SSL/TLS settings for better HTTPS handling
+	p.source.SetProperty("ssl-strict", false)
+	p.logger.Info("Using improved souphttpsrc + hlsdemux for HLS streaming")
+
+	// Create demux element (hlsdemux)
+	p.demux, err = gst.NewElement("hlsdemux")
+	if err != nil {
+		return fmt.Errorf("failed to create hlsdemux: %w", err)
+	}
+	p.demux.SetProperty("connection-speed", uint(cfg.Input.BufferSize/1024))
+	// Set additional properties for better HLS handling
+	p.demux.SetProperty("start-bitrate", uint(cfg.Output.Bitrate/1000)) // Convert to kbps
+
+	// Create transport stream demux for MPEG-TS streams
+	p.tsdemux, err = gst.NewElement("tsdemux")
+	if err != nil {
+		return fmt.Errorf("failed to create tsdemux: %w", err)
+	}
+
+	return nil
+}
+
+// createPlaybin3Source creates a playbin3 element for automatic HLS handling
+func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
+	var err error
+
+	// Create playbin3 element
+	p.source, err = gst.NewElement("playbin3")
+	if err != nil {
+		return fmt.Errorf("failed to create playbin3: %w", err)
+	}
+
+	// Configure playbin3
+	p.source.SetProperty("uri", cfg.Input.HLSUrl)
+	p.source.SetProperty("buffer-duration", int64(cfg.Input.BufferSize)*1000000) // Convert to nanoseconds
+	p.source.SetProperty("buffer-size", cfg.Input.BufferSize)
+
+	// Set flags to enable audio and video but disable subtitles
+	// GST_PLAY_FLAG_VIDEO (1) + GST_PLAY_FLAG_AUDIO (2) = 3
+	p.source.SetProperty("flags", 3)
+
+	p.logger.Info("Using playbin3 for HLS streaming")
+
+	// playbin3 handles demuxing internally, so we don't need separate demux elements
+	p.demux = nil
+	p.tsdemux = nil
+
+	return nil
+}
+
+// createUrisourcebinSource creates a urisourcebin element for semi-automatic HLS handling
+func (p *Pipeline) createUrisourcebinSource(cfg *config.Config) error {
+	var err error
+
+	// Create urisourcebin element
+	p.source, err = gst.NewElement("urisourcebin")
+	if err != nil {
+		return fmt.Errorf("failed to create urisourcebin: %w", err)
+	}
+
+	// Configure urisourcebin
+	p.source.SetProperty("uri", cfg.Input.HLSUrl)
+	p.source.SetProperty("buffer-duration", int64(cfg.Input.BufferSize)*1000000) // Convert to nanoseconds
+	p.source.SetProperty("buffer-size", cfg.Input.BufferSize)
+
+	p.logger.Info("Using urisourcebin for HLS streaming")
+
+	// urisourcebin handles source and demuxing, so we don't need separate demux elements
+	p.demux = nil
+	p.tsdemux = nil
+
+	return nil
+}
+
 // linkElements links all GStreamer elements in the pipeline
 func (p *Pipeline) linkElements() error {
+	cfg := p.config
+
+	switch cfg.Input.SourceType {
+	case "playbin3":
+		return p.linkPlaybin3Elements()
+	case "urisourcebin":
+		return p.linkUrisourcebinElements()
+	case "souphttpsrc":
+		fallthrough
+	default:
+		return p.linkSouphttpsrcElements()
+	}
+}
+
+// linkSouphttpsrcElements links elements for the souphttpsrc approach
+func (p *Pipeline) linkSouphttpsrcElements() error {
 	// Link souphttpsrc to hlsdemux
 	if err := p.source.Link(p.demux); err != nil {
 		return fmt.Errorf("failed to link source to demux: %w", err)
@@ -284,7 +438,7 @@ func (p *Pipeline) linkElements() error {
 			caps = pad.QueryCaps(nil)
 		}
 
-		if caps != nil {
+		if caps != nil && caps.GetSize() > 0 {
 			structure := caps.GetStructureAt(0)
 			if structure != nil {
 				mediaType := structure.Name()
@@ -353,7 +507,7 @@ func (p *Pipeline) linkElements() error {
 			caps = pad.QueryCaps(nil)
 		}
 
-		if caps != nil {
+		if caps != nil && caps.GetSize() > 0 {
 			structure := caps.GetStructureAt(0)
 			if structure != nil {
 				mediaType := structure.Name()
@@ -398,6 +552,125 @@ func (p *Pipeline) linkElements() error {
 		p.logger.Info("TS demux finished creating all pads")
 	})
 
+	return p.linkCommonElements()
+}
+
+// linkPlaybin3Elements links elements for the playbin3 approach
+func (p *Pipeline) linkPlaybin3Elements() error {
+	// playbin3 handles source and demuxing internally
+	// We need to connect to its pad-added signal to get decoded streams
+	p.source.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
+		padName := pad.GetName()
+		p.logger.Infof("Playbin3 new pad added: %s", padName)
+
+		// Get pad capabilities to determine media type
+		caps := pad.GetCurrentCaps()
+		if caps == nil {
+			caps = pad.QueryCaps(nil)
+		}
+
+		if caps != nil && caps.GetSize() > 0 {
+			structure := caps.GetStructureAt(0)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("Playbin3 pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "video/") {
+					// Link video stream to video queue
+					sinkPad := p.videoQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link playbin3 video pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked playbin3 video pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Video sink pad not available or already linked for playbin3 pad %s", padName)
+					}
+				} else if strings.HasPrefix(mediaType, "audio/") {
+					// Link audio stream to audio queue
+					sinkPad := p.audioQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link playbin3 audio pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked playbin3 audio pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Audio sink pad not available or already linked for playbin3 pad %s", padName)
+					}
+				}
+			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for playbin3 pad %s", padName)
+		}
+	})
+
+	return p.linkCommonElements()
+}
+
+// linkUrisourcebinElements links elements for the urisourcebin approach
+func (p *Pipeline) linkUrisourcebinElements() error {
+	// urisourcebin handles source and demuxing
+	// We need to connect to its pad-added signal to get demuxed streams
+	p.source.Connect("pad-added", func(element *gst.Element, pad *gst.Pad) {
+		padName := pad.GetName()
+		p.logger.Infof("Urisourcebin new pad added: %s", padName)
+
+		// Get pad capabilities to determine media type
+		caps := pad.GetCurrentCaps()
+		if caps == nil {
+			caps = pad.QueryCaps(nil)
+		}
+
+		if caps != nil && caps.GetSize() > 0 {
+			structure := caps.GetStructureAt(0)
+			if structure != nil {
+				mediaType := structure.Name()
+				p.logger.Infof("Urisourcebin pad %s has media type: %s", padName, mediaType)
+
+				if strings.HasPrefix(mediaType, "video/") {
+					// Link video stream to video queue
+					sinkPad := p.videoQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link urisourcebin video pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked urisourcebin video pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Video sink pad not available or already linked for urisourcebin pad %s", padName)
+					}
+				} else if strings.HasPrefix(mediaType, "audio/") {
+					// Link audio stream to audio queue
+					sinkPad := p.audioQueue.GetStaticPad("sink")
+					if sinkPad != nil && !sinkPad.IsLinked() {
+						if linkReturn := pad.Link(sinkPad); linkReturn != gst.PadLinkOK {
+							p.logger.Errorf("Failed to link urisourcebin audio pad %s: %v", padName, linkReturn)
+						} else {
+							p.logger.Infof("Successfully linked urisourcebin audio pad %s", padName)
+						}
+						sinkPad.Unref()
+					} else {
+						p.logger.Warnf("Audio sink pad not available or already linked for urisourcebin pad %s", padName)
+					}
+				}
+			}
+			caps.Unref()
+		} else {
+			p.logger.Warnf("Could not get capabilities for urisourcebin pad %s", padName)
+		}
+	})
+
+	return p.linkCommonElements()
+}
+
+// linkCommonElements links the common processing elements (video/audio chains, muxer, sink)
+func (p *Pipeline) linkCommonElements() error {
 	// Link video processing chain
 	if err := p.linkVideoChain(); err != nil {
 		return fmt.Errorf("failed to link video chain: %w", err)
@@ -413,6 +686,18 @@ func (p *Pipeline) linkElements() error {
 		return fmt.Errorf("failed to link mux to sink: %w", err)
 	}
 
+	// Add probe to monitor data flow from muxer to UDP sink
+	muxSrcPad := p.mux.GetStaticPad("src")
+	if muxSrcPad != nil {
+		muxSrcPad.AddProbe(gst.PadProbeTypeBuffer, func(pad *gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+			p.logger.Info("Muxer outputting data to UDP sink")
+			return gst.PadProbeOK
+		})
+		muxSrcPad.Unref()
+	}
+
+	p.logger.Info("Muxer to UDP sink linked successfully")
+
 	return nil
 }
 
@@ -424,7 +709,7 @@ func (p *Pipeline) linkVideoChain() error {
 		p.logger.Infof("Video decoder new pad added: %s", padName)
 
 		caps := pad.GetCurrentCaps()
-		if caps != nil {
+		if caps != nil && caps.GetSize() > 0 {
 			structure := caps.GetStructureAt(0)
 			if structure != nil {
 				mediaType := structure.Name()
@@ -437,6 +722,16 @@ func (p *Pipeline) linkVideoChain() error {
 							p.logger.Errorf("Failed to link video decode pad %s: %v", padName, linkReturn)
 						} else {
 							p.logger.Infof("Successfully linked video decoder pad %s", padName)
+
+							// Add probe to monitor raw video data
+							videoConvSrcPad := p.videoConv.GetStaticPad("src")
+							if videoConvSrcPad != nil {
+								videoConvSrcPad.AddProbe(gst.PadProbeTypeBuffer, func(pad *gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+									p.logger.Info("Raw video data flowing from converter")
+									return gst.PadProbeOK
+								})
+								videoConvSrcPad.Unref()
+							}
 						}
 						sinkPad.Unref()
 					} else {
@@ -476,6 +771,27 @@ func (p *Pipeline) linkVideoChain() error {
 	if err := p.videoEncQueue.Link(p.mux); err != nil {
 		return fmt.Errorf("failed to link video encoder queue to muxer: %w", err)
 	}
+
+	// Add probes to debug video data flow
+	videoEncSrcPad := p.videoEnc.GetStaticPad("src")
+	if videoEncSrcPad != nil {
+		videoEncSrcPad.AddProbe(gst.PadProbeTypeBuffer, func(pad *gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+			p.logger.Info("Video encoder outputting data")
+			return gst.PadProbeOK
+		})
+		videoEncSrcPad.Unref()
+	}
+
+	videoQueueOutPad := p.videoEncQueue.GetStaticPad("src")
+	if videoQueueOutPad != nil {
+		videoQueueOutPad.AddProbe(gst.PadProbeTypeBuffer, func(pad *gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+			p.logger.Info("Video data flowing to muxer")
+			return gst.PadProbeOK
+		})
+		videoQueueOutPad.Unref()
+	}
+
+	p.logger.Info("Video chain linked successfully")
 
 	return nil
 }
@@ -523,7 +839,7 @@ func (p *Pipeline) linkAudioChain() error {
 	}
 
 	// Link audio processing elements
-	elements := []*gst.Element{p.audioConv, p.audioResamp, p.audioEnc, p.audioEncQueue}
+	elements := []*gst.Element{p.audioConv, p.audioResamp, p.audioRate, p.audioEnc, p.audioEncQueue}
 
 	for i := 0; i < len(elements)-1; i++ {
 		if err := elements[i].Link(elements[i+1]); err != nil {
@@ -536,6 +852,18 @@ func (p *Pipeline) linkAudioChain() error {
 	if err := p.audioEncQueue.Link(p.mux); err != nil {
 		return fmt.Errorf("failed to link audio encoder queue to muxer: %w", err)
 	}
+
+	// Add probe to monitor audio data flow to muxer
+	audioQueueOutPad := p.audioEncQueue.GetStaticPad("src")
+	if audioQueueOutPad != nil {
+		audioQueueOutPad.AddProbe(gst.PadProbeTypeBuffer, func(pad *gst.Pad, info *gst.PadProbeInfo) gst.PadProbeReturn {
+			p.logger.Info("Audio data flowing to muxer")
+			return gst.PadProbeOK
+		})
+		audioQueueOutPad.Unref()
+	}
+
+	p.logger.Info("Audio chain linked successfully")
 
 	return nil
 }
@@ -606,6 +934,7 @@ func (p *Pipeline) createAudioEncoder(codec string) (*gst.Element, error) {
 			return nil, err
 		}
 		enc.SetProperty("bitrate", 128000)
+		enc.SetProperty("compliance", -2) // Allow experimental features
 		return enc, nil
 	case "mp3":
 		enc, err := gst.NewElement("lamemp3enc")

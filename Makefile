@@ -104,6 +104,12 @@ run-timestamp:
 run-multicast:
 	./$(BUILD_DIR)/$(BINARY_NAME) -config examples/multicast-output.yaml
 
+run-playbin3:
+	./$(BUILD_DIR)/$(BINARY_NAME) -config examples/playbin3-overlay.yaml
+
+run-urisourcebin:
+	./$(BUILD_DIR)/$(BINARY_NAME) -config examples/urisourcebin-overlay.yaml
+
 # Development targets
 dev: deps build run
 

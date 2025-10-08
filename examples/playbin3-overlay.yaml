@@ -3,7 +3,7 @@ input:
   buffer_size: 1048576
   connection_retry: 3
   timeout: 30
-  source_type: "souphttpsrc"  # Traditional approach with maximum control
+  source_type: "playbin3"  # Use playbin3 for automatic HLS handling
 
 output:
   host: "127.0.0.1"
@@ -17,11 +17,11 @@ overlay:
   enabled: true
   type: "text"
   text:
-    content: "LIVE STREAM"
+    content: "PLAYBIN3 STREAM - {{.time}}"
     font_size: 32
     font_family: "Arial Bold"
     color: "white"
-    background: "rgba(255,0,0,0.8)"
+    background: "rgba(0,150,0,0.8)"
   position:
     x: 20
     y: 20

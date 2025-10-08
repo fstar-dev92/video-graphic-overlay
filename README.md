@@ -178,6 +178,7 @@ overlay:
   - `buffer_size`: Buffer size in bytes
   - `connection_retry`: Number of connection retries
   - `timeout`: Connection timeout in seconds
+  - `source_type`: Source element type (`souphttpsrc`, `playbin3`, `urisourcebin`)
 
 - `output`: UDP output configuration
   - `host`: Target host/IP address
@@ -201,6 +202,41 @@ Text overlays support template variables:
 - `{{.date}}`: Current date (YYYY-MM-DD)
 - `{{.time}}`: Current time (HH:MM:SS)
 - `{{.unix}}`: Unix timestamp
+
+### Source Types
+
+The application supports three different GStreamer source approaches for HLS streaming:
+
+#### souphttpsrc (Default)
+- **Description**: Traditional approach using `souphttpsrc + hlsdemux + tsdemux`
+- **Pros**: Fine-grained control, explicit error handling, custom HTTP properties
+- **Cons**: More complex pipeline setup, manual pad management
+- **Best for**: Production environments requiring maximum control and debugging capability
+
+#### playbin3
+- **Description**: High-level, all-in-one element with automatic source selection and demuxing
+- **Pros**: Simplified setup, automatic adaptive streaming, built-in error recovery
+- **Cons**: Less control over individual elements, harder to debug specific issues
+- **Best for**: Simple deployments, rapid prototyping, automatic quality adaptation
+
+#### urisourcebin
+- **Description**: Mid-level element providing automatic source selection with more control than playbin3
+- **Pros**: Good balance of automation and control, easier than manual setup
+- **Cons**: Less control than manual approach, still some automatic behavior
+- **Best for**: Most production use cases requiring reliability with some control
+
+### Example Configurations
+
+```bash
+# Use playbin3 for automatic handling
+./video-overlay -config examples/playbin3-overlay.yaml
+
+# Use urisourcebin for balanced approach
+./video-overlay -config examples/urisourcebin-overlay.yaml
+
+# Use traditional souphttpsrc for maximum control
+./video-overlay -config examples/basic-text-overlay.yaml
+```
 
 ## Troubleshooting
 
