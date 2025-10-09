@@ -195,16 +195,22 @@ func (p *Pipeline) createElements() error {
 		return fmt.Errorf("failed to create audio encoder: %w", err)
 	}
 
-	// Create queues after encoders
+	// Create queues after encoders with increased buffering
 	p.videoEncQueue, err = gst.NewElement("queue")
 	if err != nil {
 		return fmt.Errorf("failed to create video encoder queue: %w", err)
 	}
+	p.videoEncQueue.SetProperty("max-size-buffers", 300)
+	p.videoEncQueue.SetProperty("max-size-time", uint64(3000000000)) // 3 seconds
+	p.videoEncQueue.SetProperty("leaky", 2)                          // Drop old buffers when full
 
 	p.audioEncQueue, err = gst.NewElement("queue")
 	if err != nil {
 		return fmt.Errorf("failed to create audio encoder queue: %w", err)
 	}
+	p.audioEncQueue.SetProperty("max-size-buffers", 300)
+	p.audioEncQueue.SetProperty("max-size-time", uint64(3000000000)) // 3 seconds
+	p.audioEncQueue.SetProperty("leaky", 2)                          // Drop old buffers when full
 
 	// Create caps filters for proper format negotiation
 	p.videoCaps, err = gst.NewElement("capsfilter")
@@ -236,8 +242,8 @@ func (p *Pipeline) createElements() error {
 	// Configure muxer for better streaming
 	if cfg.Output.Format == "mpegts" {
 		// Set properties for MPEG-TS muxer to improve streaming
-		p.mux.SetProperty("alignment", 7)               // Align to 188 bytes (TS packet size)
-		p.mux.SetProperty("latency", uint64(400000000)) // 400ms latency (matching config)
+		p.mux.SetProperty("alignment", 7)                // Align to 188 bytes (TS packet size)
+		p.mux.SetProperty("latency", uint64(3000000000)) // 3 seconds latency to accommodate buffering
 		p.mux.SetProperty("min-upstream-latency", uint64(0))
 		// Ensure both video and audio are included in the program
 		p.mux.SetProperty("prog-map", "program_map,video_0=0,audio_0=0")
@@ -323,12 +329,13 @@ func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 	p.source.SetProperty("uri", finalURL)
 
 	// Set flags to enable video and audio, disable text/subtitles
-	// GST_PLAY_FLAG_VIDEO (1) + GST_PLAY_FLAG_AUDIO (2) = 3
-	p.source.SetProperty("flags", 3)
+	// GST_PLAY_FLAG_VIDEO (1) + GST_PLAY_FLAG_AUDIO (2) + GST_PLAY_FLAG_BUFFERING (16) = 19
+	// Removed native flags to improve compatibility with adaptive streams
+	p.source.SetProperty("flags", 19)
 
-	// Configure buffering for better streaming performance
-	p.source.SetProperty("buffer-duration", int64(cfg.Input.BufferSize)*1000000) // Convert to nanoseconds
-	p.source.SetProperty("buffer-size", cfg.Input.BufferSize)
+	// Configure buffering for better streaming performance with increased latency tolerance
+	p.source.SetProperty("buffer-duration", int64(5000000000))                  // 5 seconds buffer duration
+	p.source.SetProperty("buffer-size", cfg.Input.BufferSize*2)                 // Double the buffer size
 	p.source.SetProperty("connection-speed", uint64(cfg.Input.BufferSize/1024)) // Connection speed in kbps
 
 	// Create intervideosink and interaudiosink for external processing
@@ -337,16 +344,24 @@ func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 		return fmt.Errorf("failed to create intervideosink: %w", err)
 	}
 	videoSink.SetProperty("channel", "video-channel")
+	videoSink.SetProperty("max-lateness", int64(3000000000)) // 3 seconds max lateness
 
 	audioSink, err := gst.NewElement("interaudiosink")
 	if err != nil {
 		return fmt.Errorf("failed to create interaudiosink: %w", err)
 	}
 	audioSink.SetProperty("channel", "audio-channel")
+	audioSink.SetProperty("max-lateness", int64(3000000000)) // 3 seconds max lateness
 
 	// Set the external sinks on playbin3
 	p.source.SetProperty("video-sink", videoSink)
 	p.source.SetProperty("audio-sink", audioSink)
+
+	// Add stream selection callback to handle adaptive streams
+	p.source.Connect("stream-notify::stream-collection", func(element *gst.Element, pspec *glib.ParamSpec) {
+		p.logger.Info("Stream collection updated, selecting streams")
+		p.selectStreams()
+	})
 
 	p.logger.Info("Using playbin3 with external sinks for HLS streaming and processing")
 
@@ -366,12 +381,14 @@ func (p *Pipeline) linkPlaybin3Elements() error {
 		return fmt.Errorf("failed to create intervideosrc: %w", err)
 	}
 	videoSrc.SetProperty("channel", "video-channel")
+	videoSrc.SetProperty("timeout", uint64(3000000000)) // 3 seconds timeout
 
 	audioSrc, err := gst.NewElement("interaudiosrc")
 	if err != nil {
 		return fmt.Errorf("failed to create interaudiosrc: %w", err)
 	}
 	audioSrc.SetProperty("channel", "audio-channel")
+	audioSrc.SetProperty("timeout", uint64(3000000000)) // 3 seconds timeout
 
 	// Add inter sources to pipeline
 	if err := p.pipeline.Add(videoSrc); err != nil {
@@ -666,6 +683,12 @@ func (p *Pipeline) handleMessages(ctx context.Context) {
 					p.logger.Debugf("Pipeline state changed from %s to %s",
 						oldState.String(), newState.String())
 				}
+			case gst.MessageStreamCollection:
+				p.logger.Info("Stream collection message received")
+				// Handle stream collection updates for adaptive streaming
+				p.selectStreams()
+			case gst.MessageStreamsSelected:
+				p.logger.Info("Streams selected message received")
 			}
 
 			msg.Unref()
@@ -678,4 +701,22 @@ func (p *Pipeline) IsRunning() bool {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 	return p.running
+}
+
+// selectStreams handles stream selection for adaptive streaming
+func (p *Pipeline) selectStreams() {
+	// Get the stream collection from playbin3
+	streamCollection, err := p.source.GetProperty("stream-collection")
+	if err != nil || streamCollection == nil {
+		p.logger.Warn("No stream collection available")
+		return
+	}
+
+	p.logger.Info("Selecting best video and audio streams from collection")
+
+	// For now, let playbin3 auto-select streams
+	// In a more advanced implementation, you could iterate through streams
+	// and select based on bitrate, resolution, etc.
+	p.source.SetProperty("current-video", -1) // Auto-select video
+	p.source.SetProperty("current-audio", -1) // Auto-select audio
 }
