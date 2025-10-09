@@ -12,8 +12,8 @@ input:
   # Limit bandwidth to reasonable level
   max_bitrate: 3000000      # 3Mbps max
   min_bitrate: 1000000      # 1Mbps min
-  preferred_width: 1280      # Prefer 720p
-  preferred_height: 720
+  preferred_width: 0         # Not used - actual input resolution forwarded
+  preferred_height: 0        # Not used - actual input resolution forwarded
 
 output:
   host: "127.0.0.1"
@@ -22,8 +22,7 @@ output:
   video_codec: "h264"
   audio_codec: "aac"
   format: "mpegts"
-  width: 1280      # Force 720p output
-  height: 720
+  # Output resolution will be scaled to match selected stream resolution
 
 overlay:
   enabled: true

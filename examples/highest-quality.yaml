@@ -22,9 +22,7 @@ output:
   video_codec: "h264"
   audio_codec: "aac"
   format: "mpegts"
-  # Output resolution will be set to selected stream resolution
-  width: 0      # Auto-detect from input
-  height: 0
+  # Output resolution will be scaled to match selected stream resolution
 
 overlay:
   enabled: true

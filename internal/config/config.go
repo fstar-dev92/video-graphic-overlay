@@ -40,9 +40,6 @@ type OutputConfig struct {
 	VideoCodec string `yaml:"video_codec"`
 	AudioCodec string `yaml:"audio_codec"`
 	Format     string `yaml:"format"`
-	// Output video resolution
-	Width  int `yaml:"width"`  // Output video width (0 = use input preferred)
-	Height int `yaml:"height"` // Output video height (0 = use input preferred)
 }
 
 // OverlayConfig represents graphic overlay configuration

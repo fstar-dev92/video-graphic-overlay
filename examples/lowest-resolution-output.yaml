@@ -1,0 +1,43 @@
+input:
+  hls_url: "https://hls.showfer.com/live/KiioJ/Jacob-AD/adstorm.m3u8"
+  buffer_size: 1048576  # 1MB
+  connection_retry: 3
+  timeout: 30
+  source_type: "playbin3"
+  # Adaptive streaming configuration
+  max_bitrate: 1000000      # 1Mbps max bitrate
+  min_bitrate: 0            # No minimum
+  preferred_width: 0        # Not used - actual input resolution forwarded
+  preferred_height: 0       # Not used - actual input resolution forwarded
+  # HLS parsing configuration
+  parse_master_playlist: true    # Enable master playlist parsing
+  stream_selection: "lowest"    # Select lowest resolution stream, forward actual input resolution
+
+output:
+  host: "127.0.0.1"
+  port: 6000
+  bitrate: 500000   # 500kbps for low resolution
+  video_codec: "h264"
+  audio_codec: "aac"
+  format: "mpegts"
+  # Output resolution will be scaled to match selected stream resolution
+
+overlay:
+  enabled: true
+  type: "text"
+  text:
+    content: "LOW RES OUTPUT - 384x216"
+    font_size: 16
+    font_family: "Arial"
+    color: "white"
+    background: "rgba(0,0,0,0.7)"
+  position:
+    x: 5
+    y: 5
+    anchor: "top-left"
+
+pipeline:
+  buffer_time: 600
+  latency_ms: 400
+  sync_on_clock: false
+  drop_on_latency: false

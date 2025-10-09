@@ -3,48 +3,38 @@ input:
   buffer_size: 1048576  # 1MB
   connection_retry: 3
   timeout: 30
-  source_type: "playbin3"  # Options: "playbin3"
+  source_type: "playbin3"
   # Adaptive streaming configuration
-  max_bitrate: 5000000      # 5Mbps max bitrate (0 = auto)
-  min_bitrate: 1000000      # 1Mbps min bitrate (0 = auto)
-  preferred_width: 1920     # Preferred resolution width (0 = auto)
-  preferred_height: 1080    # Preferred resolution height (0 = auto)
+  max_bitrate: 1000000      # 1Mbps max bitrate
+  min_bitrate: 0            # No minimum
+  preferred_width: 0        # Not used - actual input resolution forwarded
+  preferred_height: 0       # Not used - actual input resolution forwarded
   # HLS parsing configuration
   parse_master_playlist: true    # Enable master playlist parsing
-  stream_selection: "highest"    # "highest", "lowest", "bandwidth", "auto"
+  stream_selection: "lowest"    # Select lowest resolution stream, forward actual input resolution
 
 output:
   host: "127.0.0.1"
   port: 6000
-  bitrate: 2000000  # 2Mbps
+  bitrate: 500000   # 500kbps for low resolution
   video_codec: "h264"
   audio_codec: "aac"
   format: "mpegts"
-  # Output video resolution (overrides input preferred resolution)
-  width: 1920      # Output width (0 = use input preferred)
-  height: 1080     # Output height (0 = use input preferred)
+  # Output resolution will forward actual input resolution (no conversion)
 
 overlay:
   enabled: true
-  type: "image"  # "text", "image", "cairo"
+  type: "text"
   text:
-    content: "Live Stream - Showfer"
-    font_size: 24
+    content: "LOW RES STREAM - INPUT PASSTHROUGH"
+    font_size: 16
     font_family: "Arial"
     color: "white"
-    background: "rgba(0,0,0,0.5)"
-  image:
-    path: "./logo.png"
-    scale: 1.0
-    alpha: 0.8
-  cairo:
-    script: ""
-    width: 1920
-    height: 1080
+    background: "rgba(0,0,0,0.7)"
   position:
-    x: 10
-    y: 10
-    anchor: "top-left"  # "top-left", "top-right", "bottom-left", "bottom-right", "center"
+    x: 5
+    y: 5
+    anchor: "top-left"
 
 pipeline:
   buffer_time: 600

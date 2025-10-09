@@ -26,9 +26,9 @@ type Pipeline struct {
 	// Pipeline elements
 	source         *gst.Element // playbin3
 	videoConv      *gst.Element // videoconvert
+	videoScale     *gst.Element // videoscale to match selected stream resolution
+	videoScaleCaps *gst.Element // caps filter for selected stream resolution
 	audioConv      *gst.Element // audioconvert
-	videoScale     *gst.Element // videoscale
-	videoScaleCaps *gst.Element // caps filter after videoscale
 	audioResamp    *gst.Element // audioresample
 	audioRate      *gst.Element // audiorate for consistent timing
 	overlay        *gst.Element // text/image overlay (optional)
@@ -40,6 +40,10 @@ type Pipeline struct {
 	audioCaps      *gst.Element // caps filter for audio
 	mux            *gst.Element // muxer
 	sink           *gst.Element // udpsink
+
+	// Store selected stream resolution for scaling
+	selectedWidth  int
+	selectedHeight int
 }
 
 // New creates a new pipeline instance
@@ -106,35 +110,14 @@ func (p *Pipeline) createElements() error {
 		return fmt.Errorf("failed to create videoscale: %w", err)
 	}
 
-	// Create caps filter for video scaling to ensure proper output resolution
+	// Create caps filter for video scaling to match selected stream resolution
 	p.videoScaleCaps, err = gst.NewElement("capsfilter")
 	if err != nil {
 		return fmt.Errorf("failed to create video scale caps filter: %w", err)
 	}
 
-	// Set output video caps based on configuration or default to 1920x1080
-	outputWidth := 1920
-	outputHeight := 1080
-
-	// Priority: Output config > Input preferred > Default
-	if cfg.Output.Width > 0 && cfg.Output.Height > 0 {
-		outputWidth = cfg.Output.Width
-		outputHeight = cfg.Output.Height
-		p.logger.Infof("Using output resolution from config: %dx%d", outputWidth, outputHeight)
-	} else if cfg.Input.PreferredWidth > 0 && cfg.Input.PreferredHeight > 0 {
-		outputWidth = cfg.Input.PreferredWidth
-		outputHeight = cfg.Input.PreferredHeight
-		p.logger.Infof("Using input preferred resolution: %dx%d", outputWidth, outputHeight)
-	} else {
-		p.logger.Infof("Using default output resolution: %dx%d", outputWidth, outputHeight)
-	}
-
-	videoCapsStr := fmt.Sprintf("video/x-raw,width=%d,height=%d", outputWidth, outputHeight)
-	videoScaleCaps := gst.NewCapsFromString(videoCapsStr)
-	if videoScaleCaps != nil {
-		p.videoScaleCaps.SetProperty("caps", videoScaleCaps)
-		p.logger.Infof("Setting video output resolution to %dx%d", outputWidth, outputHeight)
-	}
+	// Video scaling caps will be set after stream selection
+	p.logger.Info("Video processing will scale to match selected stream resolution")
 
 	// Create audio processing elements
 	p.audioConv, err = gst.NewElement("audioconvert")
@@ -302,16 +285,22 @@ func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 			bestStream := playlist.SelectBestStream(selection)
 			if bestStream != nil {
 				finalURL = bestStream.URL
-				p.logger.Infof("Selected stream: %dx%d, %d bps (%s)",
+				// Store selected stream resolution for video scaling
+				p.selectedWidth = bestStream.Width
+				p.selectedHeight = bestStream.Height
+
+				p.logger.Infof("Selected HLS stream: %dx%d, %d bps (%s) - will scale output to match",
 					bestStream.Width, bestStream.Height,
 					bestStream.Bandwidth, selection)
 
-				// Update preferred resolution if not set
-				if cfg.Input.PreferredWidth == 0 && cfg.Input.PreferredHeight == 0 {
-					cfg.Input.PreferredWidth = bestStream.Width
-					cfg.Input.PreferredHeight = bestStream.Height
-					p.logger.Infof("Updated preferred resolution to %dx%d",
-						bestStream.Width, bestStream.Height)
+				// Set video scaling caps to match selected stream resolution
+				if p.videoScaleCaps != nil {
+					videoCapsStr := fmt.Sprintf("video/x-raw,width=%d,height=%d", bestStream.Width, bestStream.Height)
+					videoScaleCaps := gst.NewCapsFromString(videoCapsStr)
+					if videoScaleCaps != nil {
+						p.videoScaleCaps.SetProperty("caps", videoScaleCaps)
+						p.logger.Infof("Set video scaling to output %dx%d", bestStream.Width, bestStream.Height)
+					}
 				}
 			} else {
 				p.logger.Warnf("No suitable stream found, using original URL")
@@ -356,12 +345,6 @@ func (p *Pipeline) createPlaybin3Source(cfg *config.Config) error {
 	// Set the external sinks on playbin3
 	p.source.SetProperty("video-sink", videoSink)
 	p.source.SetProperty("audio-sink", audioSink)
-
-	// Add stream selection callback to handle adaptive streams
-	p.source.Connect("stream-notify::stream-collection", func(element *gst.Element, pspec *glib.ParamSpec) {
-		p.logger.Info("Stream collection updated, selecting streams")
-		p.selectStreams()
-	})
 
 	p.logger.Info("Using playbin3 with external sinks for HLS streaming and processing")
 
@@ -408,7 +391,7 @@ func (p *Pipeline) linkPlaybin3Elements() error {
 		return fmt.Errorf("failed to link interaudiosrc to audio converter: %w", err)
 	}
 
-	// Link video processing elements
+	// Link video processing elements (scale to match selected stream resolution)
 	elements := []*gst.Element{p.videoConv, p.videoScale, p.videoScaleCaps}
 	if p.overlay != nil {
 		elements = append(elements, p.overlay)
@@ -683,10 +666,6 @@ func (p *Pipeline) handleMessages(ctx context.Context) {
 					p.logger.Debugf("Pipeline state changed from %s to %s",
 						oldState.String(), newState.String())
 				}
-			case gst.MessageStreamCollection:
-				p.logger.Info("Stream collection message received")
-				// Handle stream collection updates for adaptive streaming
-				p.selectStreams()
 			case gst.MessageStreamsSelected:
 				p.logger.Info("Streams selected message received")
 			}
@@ -701,22 +680,4 @@ func (p *Pipeline) IsRunning() bool {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 	return p.running
-}
-
-// selectStreams handles stream selection for adaptive streaming
-func (p *Pipeline) selectStreams() {
-	// Get the stream collection from playbin3
-	streamCollection, err := p.source.GetProperty("stream-collection")
-	if err != nil || streamCollection == nil {
-		p.logger.Warn("No stream collection available")
-		return
-	}
-
-	p.logger.Info("Selecting best video and audio streams from collection")
-
-	// For now, let playbin3 auto-select streams
-	// In a more advanced implementation, you could iterate through streams
-	// and select based on bitrate, resolution, etc.
-	p.source.SetProperty("current-video", -1) // Auto-select video
-	p.source.SetProperty("current-audio", -1) // Auto-select audio
 }
