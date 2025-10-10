@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -60,6 +61,9 @@ func New(cfg *config.Config, logger *logrus.Logger) (*Pipeline, error) {
 	if err := p.buildPipeline(); err != nil {
 		return nil, fmt.Errorf("failed to build pipeline: %w", err)
 	}
+
+	// Set finalizer to ensure cleanup happens even if Dispose() is not called
+	runtime.SetFinalizer(p, (*Pipeline).finalize)
 
 	return p, nil
 }
@@ -203,6 +207,7 @@ func (p *Pipeline) createElements() error {
 	// Set video caps for H.264
 	videoCaps := gst.NewCapsFromString("video/x-h264,stream-format=avc,alignment=au")
 	if videoCaps != nil {
+		// Note: SetProperty takes ownership of the caps, so we don't unref
 		p.videoCaps.SetProperty("caps", videoCaps)
 	}
 
@@ -213,6 +218,7 @@ func (p *Pipeline) createElements() error {
 	// Set audio caps for AAC
 	audioCaps := gst.NewCapsFromString("audio/mpeg,mpegversion=4,stream-format=raw")
 	if audioCaps != nil {
+		// Note: SetProperty takes ownership of the caps, so we don't unref
 		p.audioCaps.SetProperty("caps", audioCaps)
 	}
 
@@ -613,64 +619,144 @@ func (p *Pipeline) Stop() error {
 
 	p.logger.Info("Stopping pipeline...")
 
+	// Mark as not running first to stop message processing
+	p.running = false
+
 	// Set pipeline to null state
-	p.pipeline.SetState(gst.StateNull)
+	if p.pipeline != nil {
+		if err := p.pipeline.SetState(gst.StateNull); err != nil {
+			p.logger.Warnf("Failed to set pipeline to NULL state: %v", err)
+		} else {
+			// Wait for state change to complete
+			p.pipeline.GetState(gst.StateNull, gst.ClockTimeNone)
+		}
+	}
 
 	// Quit main loop
-	p.loop.Quit()
+	if p.loop != nil {
+		p.loop.Quit()
+	}
 
-	p.running = false
-	p.logger.Info("Pipeline stopped")
+	// Give message handler time to exit
+	time.Sleep(200 * time.Millisecond)
+
+	// Perform cleanup
+	p.cleanup()
+
+	p.logger.Info("Pipeline stopped and cleaned up")
 
 	return nil
 }
 
+// cleanup properly disposes of GStreamer objects to prevent memory leaks
+func (p *Pipeline) cleanup() {
+	p.logger.Info("Cleaning up GStreamer objects...")
+
+	// First, clear the bus reference without unreferencing
+	// The bus is owned by the pipeline and will be freed when pipeline is freed
+	p.bus = nil
+
+	// Clear element references (they're owned by the pipeline)
+	// Don't unref them individually as the pipeline owns them
+	p.source = nil
+	p.videoConv = nil
+	p.videoScale = nil
+	p.videoScaleCaps = nil
+	p.audioConv = nil
+	p.audioResamp = nil
+	p.audioRate = nil
+	p.overlay = nil
+	p.videoEnc = nil
+	p.audioEnc = nil
+	p.videoEncQueue = nil
+	p.audioEncQueue = nil
+	p.videoCaps = nil
+	p.audioCaps = nil
+	p.mux = nil
+	p.sink = nil
+
+	// Finally, unref the pipeline (this will free all contained elements and the bus)
+	// Only unref if we still have a reference
+	if p.pipeline != nil {
+		p.pipeline.Unref()
+		p.pipeline = nil
+	}
+
+	p.logger.Info("GStreamer objects cleaned up successfully")
+}
+
 // handleMessages handles GStreamer bus messages
 func (p *Pipeline) handleMessages(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Errorf("Recovered from panic in message handler: %v", r)
+		}
+		p.logger.Debug("Message handler exiting")
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Debug("Message handler context cancelled, exiting")
 			return
 		default:
-			msg := p.bus.TimedPop(gst.ClockTime(100 * time.Millisecond))
+			// Check if pipeline is still running
+			p.mutex.RLock()
+			running := p.running
+			bus := p.bus
+			p.mutex.RUnlock()
+
+			if !running || bus == nil {
+				p.logger.Debug("Pipeline stopped or bus is nil, exiting message handler")
+				return
+			}
+
+			msg := bus.TimedPop(gst.ClockTime(100 * time.Millisecond))
 			if msg == nil {
 				continue
 			}
 
-			switch msg.Type() {
-			case gst.MessageEOS:
-				p.logger.Info("End of stream received")
-				return
-			case gst.MessageError:
-				err := msg.ParseError()
-				p.logger.Errorf("Pipeline error: %s", err.Error())
-				if debug := err.DebugString(); debug != "" {
-					p.logger.Errorf("Debug: %s", debug)
-				}
-				return
-			case gst.MessageWarning:
-				err := msg.ParseWarning()
-				p.logger.Warnf("Pipeline warning: %s", err.Error())
-				if debug := err.DebugString(); debug != "" {
-					p.logger.Warnf("Debug: %s", debug)
-				}
-			case gst.MessageInfo:
-				err := msg.ParseInfo()
-				p.logger.Infof("Pipeline info: %s", err.Error())
-				if debug := err.DebugString(); debug != "" {
-					p.logger.Infof("Debug: %s", debug)
-				}
-			case gst.MessageStateChanged:
-				if msg.Source() == p.pipeline.GetName() {
-					oldState, newState := msg.ParseStateChanged()
-					p.logger.Debugf("Pipeline state changed from %s to %s",
-						oldState.String(), newState.String())
-				}
-			case gst.MessageStreamsSelected:
-				p.logger.Info("Streams selected message received")
-			}
+			// Safely handle the message
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						p.logger.Errorf("Recovered from panic while processing message: %v", r)
+					}
+				}()
 
-			msg.Unref()
+				switch msg.Type() {
+				case gst.MessageEOS:
+					p.logger.Info("End of stream received")
+					return
+				case gst.MessageError:
+					err := msg.ParseError()
+					p.logger.Errorf("Pipeline error: %s", err.Error())
+					if debug := err.DebugString(); debug != "" {
+						p.logger.Errorf("Debug: %s", debug)
+					}
+					return
+				case gst.MessageWarning:
+					err := msg.ParseWarning()
+					p.logger.Warnf("Pipeline warning: %s", err.Error())
+					if debug := err.DebugString(); debug != "" {
+						p.logger.Warnf("Debug: %s", debug)
+					}
+				case gst.MessageInfo:
+					err := msg.ParseInfo()
+					p.logger.Infof("Pipeline info: %s", err.Error())
+					if debug := err.DebugString(); debug != "" {
+						p.logger.Infof("Debug: %s", debug)
+					}
+				case gst.MessageStateChanged:
+					if msg.Source() == p.pipeline.GetName() {
+						oldState, newState := msg.ParseStateChanged()
+						p.logger.Debugf("Pipeline state changed from %s to %s",
+							oldState.String(), newState.String())
+					}
+				case gst.MessageStreamsSelected:
+					p.logger.Info("Streams selected message received")
+				}
+			}()
 		}
 	}
 }
@@ -680,4 +766,43 @@ func (p *Pipeline) IsRunning() bool {
 	p.mutex.RLock()
 	defer p.mutex.RUnlock()
 	return p.running
+}
+
+// Dispose properly cleans up all GStreamer resources
+// This should be called when the pipeline is no longer needed
+func (p *Pipeline) Dispose() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	p.logger.Info("Disposing pipeline resources...")
+
+	// Stop the pipeline if it's still running
+	if p.running {
+		if p.pipeline != nil {
+			p.pipeline.SetState(gst.StateNull)
+		}
+		if p.loop != nil {
+			p.loop.Quit()
+		}
+		p.running = false
+	}
+
+	// Perform cleanup
+	p.cleanup()
+
+	// Clear the finalizer since we're cleaning up manually
+	runtime.SetFinalizer(p, nil)
+
+	p.logger.Info("Pipeline disposed successfully")
+}
+
+// finalize is called by the garbage collector as a last resort cleanup
+func (p *Pipeline) finalize() {
+	if p.pipeline != nil || p.bus != nil {
+		// Log a warning since this should have been cleaned up manually
+		if p.logger != nil {
+			p.logger.Warn("Pipeline finalizer called - resources should have been disposed manually")
+		}
+		p.cleanup()
+	}
 }

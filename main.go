@@ -41,6 +41,13 @@ func main() {
 		log.Fatalf("Failed to create pipeline: %v", err)
 	}
 
+	// Ensure proper cleanup on exit
+	defer func() {
+		log.Info("Performing final cleanup...")
+		p.Dispose()
+		log.Info("Application shutdown complete")
+	}()
+
 	// Start pipeline in goroutine
 	errChan := make(chan error, 1)
 	go func() {

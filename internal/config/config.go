@@ -23,11 +23,8 @@ type InputConfig struct {
 	Timeout         int    `yaml:"timeout"`
 	SourceType      string `yaml:"source_type"` // "playbin3"
 	// Adaptive streaming options
-	MaxBitrate      int `yaml:"max_bitrate"`      // Maximum bitrate to select (0 = auto)
-	MinBitrate      int `yaml:"min_bitrate"`      // Minimum bitrate to select (0 = auto)
-	PreferredWidth  int `yaml:"preferred_width"`  // Preferred resolution width (0 = auto)
-	PreferredHeight int `yaml:"preferred_height"` // Preferred resolution height (0 = auto)
-	// HLS parsing options
+	MaxBitrate          int    `yaml:"max_bitrate"`           // Maximum bitrate to select (0 = auto)
+	MinBitrate          int    `yaml:"min_bitrate"`           // Minimum bitrate to select (0 = auto)
 	ParseMasterPlaylist bool   `yaml:"parse_master_playlist"` // Enable master playlist parsing
 	StreamSelection     string `yaml:"stream_selection"`      // "highest", "lowest", "bandwidth", "auto"
 }

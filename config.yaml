@@ -6,10 +6,7 @@ input:
   source_type: "playbin3"
   # Adaptive streaming configuration
   max_bitrate: 1000000      # 1Mbps max bitrate
-  min_bitrate: 0            # No minimum
-  preferred_width: 0        # Not used - actual input resolution forwarded
-  preferred_height: 0       # Not used - actual input resolution forwarded
-  # HLS parsing configuration
+  min_bitrate: 0            # No minimum  # HLS parsing configuration
   parse_master_playlist: true    # Enable master playlist parsing
   stream_selection: "lowest"    # Select lowest resolution stream, forward actual input resolution
 
@@ -20,7 +17,6 @@ output:
   video_codec: "h264"
   audio_codec: "aac"
   format: "mpegts"
-  # Output resolution will forward actual input resolution (no conversion)
 
 overlay:
   enabled: true
